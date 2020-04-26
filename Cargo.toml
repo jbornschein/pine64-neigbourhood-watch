@@ -14,4 +14,9 @@ stderrlog = "0.4.1"
 log = "0.4"
 fastping-rs = "0.1.5"
 
-
+[profile.release]
+opt-level = 3
+lto = true
+debug = false
+codegen-units = 1
+panic = "abort"

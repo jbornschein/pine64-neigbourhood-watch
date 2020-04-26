@@ -1,11 +1,17 @@
+// #![feature(alloc_system)]
+// extern crate alloc_system;
+
 use fastping_rs::PingResult::{Idle, Receive};
 use fastping_rs::Pinger;
+use gpio_cdev::{Chip, LineRequestFlags};
 use log::{error, info, trace};
+use std::error::Error;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use stderrlog;
 use structopt::StructOpt;
+
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "neigbourhood-watch", about = "Check our neighbour for health.")]
@@ -27,16 +33,17 @@ struct Opt {
     dry_run: bool,
 }
 
-fn reset_network() {
-    /// Try to reset and reestablish our own network connectivity.
+/// Try to re-establish our own network connectivity.
+fn reset_network_config() -> Result<(), Box<dyn Error>> {
     let mut _child = Command::new("/sbin/ifup")
         .arg("-a")
-        .spawn()
-        .expect("Failed to spawn /sbin/ifup");
+        .spawn()?;
+
+    Ok(())
 }
 
-fn reset_myself() {
-    // Friendly reboot ourself system/
+/// Friendly reboot ourself.
+fn reset_myself() -> ! {
     println!("Rebooting the system");
 
     let mut _child = Command::new("/sbin/reboot")
@@ -55,16 +62,28 @@ fn reset_myself() {
     }
 }
 
-fn reset_neighbour() {
-    /// Reset out neigbour
-    /// 
-    ///  echo "34" > /sys/class/gpio/export
-    ///  echo 1     > /sys/class/gpio/gpio34/active_low
-    ///  echo "out" > /sys/class/gpio/gpio34/direction
-    ///  echo 1     > /sys/class/gpio/gpio34/value
-    ///  sleep 1
-    ///  echo 0 > /sys/class/gpio/gpio34/value
-    error!("Failed to reset neigbour: not implemented yet!")
+/// Reset out neigbour via GPIO pin
+fn reset_neighbour() -> Result<(), Box<dyn Error>> {
+    // The specific gpio-chip and port are determined by the physical
+    // build of our Pine64 cluster: 
+    //
+    // When using the legacy-sysfs API it is gpiochip0, line 34. 
+    // On the new char-dev based API it is gpiochip1, line 34.
+    // 
+    // In both cases the pin is ACTIVE_LOW, but I'm not sure how to configure
+    // that with the cdev API here; so instead we just set the defautl to 1 (on)
+    // and explicitly set it to 0 for one second before releasing the line again.   
+    let mut chip = Chip::new("/dev/gpiochip1")?;
+    let handle = chip
+        .get_line(34)?
+        .request(LineRequestFlags::OUTPUT, 1, "reset")?;    
+
+    info!("Resetting our neigbour");
+    handle.set_value(0)?;
+    thread::sleep(Duration::from_secs(1));
+    handle.set_value(1)?;
+    println!("Done.");
+    Ok(())
 }
 
 fn main() {
