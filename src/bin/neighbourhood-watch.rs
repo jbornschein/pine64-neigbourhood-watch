@@ -2,9 +2,9 @@
 // extern crate alloc_system;
 
 use dns_lookup;
+use fastping_rs;
 use gpio_cdev;
 use log::{error, info, warn};
-use ping;
 use std::error::Error;
 use std::process::Command;
 use std::thread;
@@ -85,20 +85,21 @@ fn reset_neighbour() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-
+/// Return a IPv4 address for the given hostname.
 fn resolve_hostname(host: &str) -> Result<IpAddr, Box<dyn Error>> {
     let replies =
         dns_lookup::lookup_host(host).map_err(|e| format!("Could not resolve {} ({})", host, e))?;
     Ok(replies.iter().find(|addr| addr.is_ipv4()).unwrap().clone())
 }
 
+
+/// Statemachine for the neigbour-reset.
 #[derive(Debug)]
 enum State {
     LostUniverse,
     Idle,
     Armed,
 }
-
 
 
 /// Program Entrypoint
@@ -121,40 +122,39 @@ fn main() -> Result<(), Box<dyn Error>> {
         .iter()
         .map(|&host| resolve_hostname(host))
         .collect::<Result<_, _>>()?;
-    let mut universe_last_seen: HashMap<&str, Instant> = HashMap::new();
+    let mut universe_last_seen: HashMap<IpAddr, Instant> = HashMap::new();
+
+    // Setup pinger thread
+    let (pinger, ping_results) = match fastping_rs::Pinger::new(None, None) {
+        Ok((pinger, ping_results)) => (pinger, ping_results),
+        Err(e) => panic!("Error creating pinger: {}", e)
+    };
+    
+    pinger.add_ipaddr(&neighbour.to_string());
+    for &addr in universe_addrs.iter() {
+        pinger.add_ipaddr(&addr.to_string());
+    }
+    pinger.run_pinger();
+
 
     // Actual watchdog loop...
     let mut state = State::LostUniverse;
     loop {
-        // Ping all hosts in the universe.
-        for (&host, addr) in universe.iter().zip(universe_addrs.iter()) {
-            let ping_result = ping::ping(
-                *addr,
-                Some(Duration::from_millis(500)),
-                None,
-                None,
-                None,
-                None,
-            );
-
-            match ping_result {
-                Ok(_) => *universe_last_seen.entry(host).or_insert(Instant::now()) = Instant::now(),
-                Err(e) => info!("Failed to ping {}: {}", host, e),
+        for result in ping_results.try_iter() {
+            match result {
+                fastping_rs::PingResult::Idle{addr} => {
+                    info!("Failed to ping {}", addr);
+                },
+                fastping_rs::PingResult::Receive{addr, rtt: _} => {
+                    if universe_addrs.contains(&addr) {
+                        *universe_last_seen.entry(addr)
+                            .or_insert(Instant::now()) = Instant::now();
+                    }
+                    if neighbour_addr == addr {
+                        neigbour_last_seen = Some(Instant::now());
+                    }
+                }
             }
-        }
-
-        // Ping our neighbour
-        let ping_result = ping::ping(
-            neighbour_addr,
-            Some(Duration::from_millis(500)),
-            None,
-            None,
-            None,
-            None,
-        );
-        match ping_result {
-            Ok(_) => neigbour_last_seen = Some(Instant::now()),
-            Err(e) => info!("Failed to ping neighbour {}: {}", neighbour_addr, e),
         }
 
         //
@@ -166,6 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let neighbour_alive =
             neigbour_last_seen.map_or(false, |i| i.elapsed().as_secs() < args.timeout);
 
+        // Statemachine for the neigbour reset
         match &state {
             State::LostUniverse => {
                 if universe_alive {
@@ -201,7 +202,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        std::thread::sleep(Duration::from_secs(10));
+        std::thread::sleep(Duration::from_secs(1));
     }
 
 }
