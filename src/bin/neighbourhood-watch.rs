@@ -1,8 +1,10 @@
 // #![feature(alloc_system)]
 // extern crate alloc_system;
 
+use anyhow;
+use anyhow::Context;
 use dns_lookup;
-use fastping_rs;
+use fastping_rs::{Pinger, PingResult};
 use gpio_cdev;
 use log::{error, info, warn};
 use std::error::Error;
@@ -63,7 +65,7 @@ fn reset_myself() -> ! {
 }
 
 /// Reset out neigbour via GPIO pin
-fn reset_neighbour() -> Result<(), Box<dyn Error>> {
+fn reset_neighbour() -> anyhow::Result<(), Box<dyn Error>> {
     // The specific gpio-chip and port are determined by the physical
     // build of our Pine64 cluster:
     //
@@ -86,9 +88,9 @@ fn reset_neighbour() -> Result<(), Box<dyn Error>> {
 }
 
 /// Return a IPv4 address for the given hostname.
-fn resolve_hostname(host: &str) -> Result<IpAddr, Box<dyn Error>> {
-    let replies =
-        dns_lookup::lookup_host(host).map_err(|e| format!("Could not resolve {} ({})", host, e))?;
+fn resolve_hostname(host: &str) -> anyhow::Result<IpAddr> {
+    let replies = dns_lookup::lookup_host(host)
+        .with_context(|| format!("Could not resolve {}", host))?;
     Ok(replies.iter().find(|addr| addr.is_ipv4()).unwrap().clone())
 }
 
@@ -101,9 +103,8 @@ enum State {
     Armed,
 }
 
-
 /// Program Entrypoint
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> anyhow::Result<()> {
     let args = Opt::from_args();
 
     stderrlog::new()
@@ -124,28 +125,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect::<Result<_, _>>()?;
     let mut universe_last_seen: HashMap<IpAddr, Instant> = HashMap::new();
 
-    // Setup pinger thread
-    let (pinger, ping_results) = match fastping_rs::Pinger::new(None, None) {
-        Ok((pinger, ping_results)) => (pinger, ping_results),
-        Err(e) => panic!("Error creating pinger: {}", e)
-    };
-    
+    // Setup pinger thread (fastping-rs)
+    let (pinger, ping_results) = Pinger::new(None, None)
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("Failed to setup pinger")?;
+        
     pinger.add_ipaddr(&neighbour.to_string());
     for &addr in universe_addrs.iter() {
         pinger.add_ipaddr(&addr.to_string());
     }
     pinger.run_pinger();
 
-
     // Actual watchdog loop...
     let mut state = State::LostUniverse;
     loop {
         for result in ping_results.try_iter() {
             match result {
-                fastping_rs::PingResult::Idle{addr} => {
+                PingResult::Idle{addr} => {
                     info!("Failed to ping {}", addr);
                 },
-                fastping_rs::PingResult::Receive{addr, rtt: _} => {
+                PingResult::Receive{addr, rtt: _} => {
                     if universe_addrs.contains(&addr) {
                         *universe_last_seen.entry(addr)
                             .or_insert(Instant::now()) = Instant::now();
