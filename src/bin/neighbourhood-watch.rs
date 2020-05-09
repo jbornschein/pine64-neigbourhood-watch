@@ -136,6 +136,8 @@ fn main() -> anyhow::Result<()> {
     }
     pinger.run_pinger();
 
+    info!("Staring neigbourhood watch for {}", neighbour);
+
     // Actual watchdog loop...
     let mut state = State::LostUniverse;
     loop {
