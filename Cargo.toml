@@ -10,12 +10,11 @@ edition = "2018"
 anyhow = "1.0.28"
 chrono = "0.4.*"
 dns-lookup = "1.0.*"
-fastping-rs = "0.1.5"
+fastping-rs = "0.2.*"
 gpio-cdev = "0.2.*"
 structopt = "0.2.*"
 stderrlog = "0.4.*"
 log = "0.4"
-# ping = "0.2.*"
 
 [profile.release]
 opt-level = 3
